@@ -22,9 +22,123 @@ using System.Xml;
 
 namespace WinLaunch_installer
 {
-    /// <summary>
-    /// Interaktionslogik für MainWindow.xaml
-    /// </summary>
+    public class Installer
+    {
+        public static void CreateUninstaller(Assembly assembly, string installDir, string name)
+        {
+            string location = Assembly.GetEntryAssembly().Location;
+            string str1 = Path.Combine(installDir, "Setup.exe");
+            string destFileName = str1;
+            System.IO.File.Copy(location, destFileName, true);
+            Registry.CurrentUser.CreateSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall");
+            using (RegistryKey registryKey1 = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", true))
+            {
+                if (registryKey1 == null)
+                    throw new Exception("Uninstall registry key not found.");
+                try
+                {
+                    RegistryKey registryKey2 = (RegistryKey)null;
+                    try
+                    {
+                        registryKey2 = registryKey1.OpenSubKey(name, true) ?? registryKey1.CreateSubKey(name);
+                        if (registryKey2 == null)
+                            throw new Exception(string.Format("Unable to create uninstaller '{0}\\{1}'", (object)str1, (object)name));
+                        
+                        string str2 = "\"" + str1.Replace("/", "\\\\") + "\"";
+                        registryKey2.SetValue("DisplayName", (object)name);
+                        registryKey2.SetValue("UninstallString", (object)str2);
+                    }
+                    finally
+                    {
+                        registryKey2?.Close();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception("An error occurred writing uninstall information to the registry.  The service is fully installed but can only be uninstalled manually through the command line.", ex);
+                }
+            }
+        }
+
+
+        public static string GetDownloadURL()
+        {
+            string s = (string)null;
+            try
+            {
+                string address = "http://bit.ly/WinlaunchDownload";
+                using (WebClient webClient = new WebClient())
+                {
+                    webClient.Headers.Add(HttpRequestHeader.UserAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.99 Safari/537.36");
+                    string xml = webClient.DownloadString(address);
+                    XmlDocument xmlDocument = new XmlDocument();
+                    xmlDocument.LoadXml(xml);
+                    s = xmlDocument.GetElementsByTagName("url")[0].InnerText;
+                    string innerText = xmlDocument.GetElementsByTagName("signature")[0].InnerText;
+                    byte[] bytes = Encoding.Unicode.GetBytes(s);
+                    byte[] signature = Convert.FromBase64String(innerText);
+                    string xmlString = "<RSAKeyValue><Modulus>nPnBFiUsgdANJct8U9CgFLMh0ygdBw8PiZ7G9eBn1K5g9CMlLAaIccRMXP+jl5OZ4fRs22DfiYhMYqkcF+pry31cP3osKlTx0/WsFVonuUfvm4urfM9KT8+nZwJ+37kHcq1f6MHdmb4dbS57XFWiBFWFmPRKccpkIgiXjgrh5JzBBvBS7Ig88M7eUTo/laX6etmMwAodIzPCDswILaoWLhu3QVKmO81Hci5EtREmjcnS9TWMJ6Czdh3/Z1fEAPJiQB2wTxj/CpyH7B+pS0Y/qA/4AqYgH/eTbnk7JHkmhkBSyPcA4Xy9yJrljhws/v9zWcARtSDSz3BEr+QPGnoPEQ==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>";
+                    RSACryptoServiceProvider cryptoServiceProvider = new RSACryptoServiceProvider();
+                    cryptoServiceProvider.FromXmlString(xmlString);
+                    if (!cryptoServiceProvider.VerifyData(bytes, (object)CryptoConfig.MapNameToOID("SHA512"), signature))
+                        return (string)null;
+                }
+            }
+            catch (Exception ex)
+            {
+                return (string)null;
+            }
+            return s;
+        }
+
+        public static void Unzip(string zipPath, string folder)
+        {
+            ZipStorer zipStorer = ZipStorer.Open(zipPath, FileAccess.Read);
+            foreach (ZipStorer.ZipFileEntry _zfe in zipStorer.ReadCentralDir())
+            {
+                string directoryName = Path.GetDirectoryName(Path.Combine(folder, _zfe.FilenameInZip));
+                if (!Directory.Exists(directoryName))
+                    Directory.CreateDirectory(directoryName);
+                zipStorer.ExtractFile(_zfe, Path.Combine(folder, _zfe.FilenameInZip));
+            }
+            zipStorer.Close();
+        }
+
+        public static void SetDirectoryPermission(string dir)
+        {
+            DirectoryInfo directoryInfo = new DirectoryInfo(dir);
+            SecurityIdentifier identity = new SecurityIdentifier(WellKnownSidType.WorldSid, (SecurityIdentifier)null);
+            DirectorySecurity accessControl = directoryInfo.GetAccessControl();
+            accessControl.AddAccessRule(new FileSystemAccessRule((IdentityReference)identity, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+            directoryInfo.SetAccessControl(accessControl);
+        }
+
+        public static void CreateFileShortcut(string file, string directory)
+        {
+            string shortcutAddress = Path.Combine(directory, Path.GetFileNameWithoutExtension(file) + ".lnk");
+
+            Type t = Type.GetTypeFromCLSID(new Guid("72C24DD5-D70A-438B-8A42-98424B88AFB8")); //Windows Script Host Shell Object
+            dynamic shell = Activator.CreateInstance(t);
+            try
+            {
+                var lnk = shell.CreateShortcut(shortcutAddress);
+                try
+                {
+                    lnk.TargetPath = file;
+                    lnk.Save();
+                }
+                finally
+                {
+                    Marshal.FinalReleaseComObject(lnk);
+                }
+            }
+            finally
+            {
+                Marshal.FinalReleaseComObject(shell);
+            }
+        }
+    }
+
     public partial class MainWindow : Window
     {
         private const uint MF_BYCOMMAND = 0;
@@ -77,131 +191,21 @@ namespace WinLaunch_installer
             this.SetHomeDirectory();
             this.temppath = Path.GetTempFileName();
             this.tbStatus.Text = "Starting download...";
-            string downloadUrl = this.GetDownloadURL();
+            string downloadUrl = Installer.GetDownloadURL();
             if (downloadUrl == null)
                 this.ErrorInstall("An error occured while retrieving the download url\r\nplease check your internet connection and try again.", "Close");
             else
                 this.StartDownload(downloadUrl, this.temppath);
         }
 
-        private void CreateUninstaller()
-        {
-            string location = Assembly.GetEntryAssembly().Location;
-            string str1 = Path.Combine(this.installDir, "Setup.exe");
-            string destFileName = str1;
-            System.IO.File.Copy(location, destFileName, true);
-            Registry.CurrentUser.CreateSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall");
-            using (RegistryKey registryKey1 = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", true))
-            {
-                if (registryKey1 == null)
-                    throw new Exception("Uninstall registry key not found.");
-                try
-                {
-                    RegistryKey registryKey2 = (RegistryKey)null;
-                    try
-                    {
-                        string name = this.name;
-                        registryKey2 = registryKey1.OpenSubKey(name, true) ?? registryKey1.CreateSubKey(name);
-                        if (registryKey2 == null)
-                            throw new Exception(string.Format("Unable to create uninstaller '{0}\\{1}'", (object)str1, (object)name));
-                        Assembly assembly = this.GetType().Assembly;
-                        string str2 = "\"" + str1.Replace("/", "\\\\") + "\"";
-                        registryKey2.SetValue("DisplayName", (object)this.name);
-                        registryKey2.SetValue("UninstallString", (object)str2);
-                    }
-                    finally
-                    {
-                        registryKey2?.Close();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    throw new Exception("An error occurred writing uninstall information to the registry.  The service is fully installed but can only be uninstalled manually through the command line.", ex);
-                }
-            }
-        }
+        
 
         private void SetHomeDirectory() => Directory.SetCurrentDirectory(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
 
-        private string GetDownloadURL()
-        {
-            string s = (string)null;
-            try
-            {
-                string address = "http://bit.ly/WinlaunchDownload";
-                using (WebClient webClient = new WebClient())
-                {
-                    webClient.Headers.Add(HttpRequestHeader.UserAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.99 Safari/537.36");
-                    string xml = webClient.DownloadString(address);
-                    XmlDocument xmlDocument = new XmlDocument();
-                    xmlDocument.LoadXml(xml);
-                    s = xmlDocument.GetElementsByTagName("url")[0].InnerText;
-                    string innerText = xmlDocument.GetElementsByTagName("signature")[0].InnerText;
-                    byte[] bytes = Encoding.Unicode.GetBytes(s);
-                    byte[] signature = Convert.FromBase64String(innerText);
-                    string xmlString = "<RSAKeyValue><Modulus>nPnBFiUsgdANJct8U9CgFLMh0ygdBw8PiZ7G9eBn1K5g9CMlLAaIccRMXP+jl5OZ4fRs22DfiYhMYqkcF+pry31cP3osKlTx0/WsFVonuUfvm4urfM9KT8+nZwJ+37kHcq1f6MHdmb4dbS57XFWiBFWFmPRKccpkIgiXjgrh5JzBBvBS7Ig88M7eUTo/laX6etmMwAodIzPCDswILaoWLhu3QVKmO81Hci5EtREmjcnS9TWMJ6Czdh3/Z1fEAPJiQB2wTxj/CpyH7B+pS0Y/qA/4AqYgH/eTbnk7JHkmhkBSyPcA4Xy9yJrljhws/v9zWcARtSDSz3BEr+QPGnoPEQ==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>";
-                    RSACryptoServiceProvider cryptoServiceProvider = new RSACryptoServiceProvider();
-                    cryptoServiceProvider.FromXmlString(xmlString);
-                    if (!cryptoServiceProvider.VerifyData(bytes, (object)CryptoConfig.MapNameToOID("SHA512"), signature))
-                        return (string)null;
-                }
-            }
-            catch (Exception ex)
-            {
-                return (string)null;
-            }
-            return s;
-        }
 
         private void StartDownload(string url, string path) => this.webClient.DownloadFileAsync(new Uri(url), path);
 
-        private static void Unzip(string zipPath, string folder)
-        {
-            ZipStorer zipStorer = ZipStorer.Open(zipPath, FileAccess.Read);
-            foreach (ZipStorer.ZipFileEntry _zfe in zipStorer.ReadCentralDir())
-            {
-                string directoryName = Path.GetDirectoryName(Path.Combine(folder, _zfe.FilenameInZip));
-                if (!Directory.Exists(directoryName))
-                    Directory.CreateDirectory(directoryName);
-                zipStorer.ExtractFile(_zfe, Path.Combine(folder, _zfe.FilenameInZip));
-            }
-            zipStorer.Close();
-        }
-
-        private static void SetDirectoryPermission(string dir)
-        {
-            DirectoryInfo directoryInfo = new DirectoryInfo(dir);
-            SecurityIdentifier identity = new SecurityIdentifier(WellKnownSidType.WorldSid, (SecurityIdentifier)null);
-            DirectorySecurity accessControl = directoryInfo.GetAccessControl();
-            accessControl.AddAccessRule(new FileSystemAccessRule((IdentityReference)identity, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
-            directoryInfo.SetAccessControl(accessControl);
-        }
-
-
-        static void CreateFileShortcut(string file, string directory)
-        {
-            string shortcutAddress = Path.Combine(directory, Path.GetFileNameWithoutExtension(file) + ".lnk");
-
-            Type t = Type.GetTypeFromCLSID(new Guid("72C24DD5-D70A-438B-8A42-98424B88AFB8")); //Windows Script Host Shell Object
-            dynamic shell = Activator.CreateInstance(t);
-            try
-            {
-                var lnk = shell.CreateShortcut(shortcutAddress);
-                try
-                {
-                    lnk.TargetPath = file;
-                    lnk.Save();
-                }
-                finally
-                {
-                    Marshal.FinalReleaseComObject(lnk);
-                }
-            }
-            finally
-            {
-                Marshal.FinalReleaseComObject(shell);
-            }
-        }
+        
 
         void webClient_DownloadFileCompleted(object sender, System.ComponentModel.AsyncCompletedEventArgs e)
         {
@@ -253,7 +257,7 @@ namespace WinLaunch_installer
                     }));
 
                     //unzip to install directory
-                    Unzip(temppath, installDir);
+                    Installer.Unzip(temppath, installDir);
                     Thread.Sleep(1000);
 
                     Dispatcher.BeginInvoke(new Action(() =>
@@ -262,7 +266,7 @@ namespace WinLaunch_installer
                     }));
 
                     //set directory permission
-                    SetDirectoryPermission(installDir);
+                    Installer.SetDirectoryPermission(installDir);
                     Thread.Sleep(500);
 
                     Dispatcher.BeginInvoke(new Action(() =>
@@ -282,18 +286,19 @@ namespace WinLaunch_installer
                     //create shortcut on desktop 
                     string WinLaunchStarterPath = System.IO.Path.Combine(installDir, "WinLaunch Starter.exe");
                     string desktopDir = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-                    CreateFileShortcut(WinLaunchStarterPath, desktopDir);
+                    Installer.CreateFileShortcut(WinLaunchStarterPath, desktopDir);
                     Thread.Sleep(500);
 
                     //set autostart
-                    Autostart.SetAutoStart("WinLaunch", System.IO.Path.Combine(installDir, runApp), " -hide");
+                    Autostart.SetAutoStart(this.name, System.IO.Path.Combine(installDir, runApp), " -hide");
 
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         tbStatus.Text = "Create uninstaller";
                     }));
 
-                    CreateUninstaller();
+                    Assembly assembly = this.GetType().Assembly;
+                    Installer.CreateUninstaller(assembly, this.installDir, this.name);
                     Thread.Sleep(500);
                 }
                 catch (Exception ex)
@@ -356,6 +361,7 @@ namespace WinLaunch_installer
                 Thread.Sleep(500);
             }
         }
+
         void BeginUninstallation()
         {
             pbProgress.IsIndeterminate = true;
